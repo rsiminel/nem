@@ -30,6 +30,23 @@ namespace nem {
         AlignedVector(const AlignedVector&) = delete;
         AlignedVector& operator=(const AlignedVector&) = delete;
 
+        AlignedVector(AlignedVector&& other) noexcept
+            : m_data(other.m_data), m_size(other.m_size) {
+            other.m_data = nullptr;
+            other.m_size = 0;
+        }
+
+        AlignedVector& operator=(AlignedVector&& other) noexcept {
+            if (this != &other) {
+                destroy();
+                m_data = other.m_data;
+                m_size = other.m_size;
+                other.m_data = nullptr;
+                other.m_size = 0;
+            }
+            return *this;
+        }
+
         T* begin() noexcept {
             return m_data;
         }
