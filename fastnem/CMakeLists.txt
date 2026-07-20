@@ -30,6 +30,9 @@ target_compile_options(fastnem INTERFACE -mavx2 -mfma)
 find_package(Threads REQUIRED)
 target_link_libraries(fastnem INTERFACE Threads::Threads)
 
+add_subdirectory(app)
+add_subdirectory(benchs)
+
 include(FetchContent)
 
 if(FASTNEM_TESTS)
