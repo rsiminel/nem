@@ -55,6 +55,8 @@ namespace nem {
             for (std::size_t i = 0; i < m_rows * m_cols; ++i) {
                 out.m_data[i] = m_data[i];
             }
+
+            return out;
         }
 
 
