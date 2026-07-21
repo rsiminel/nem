@@ -31,7 +31,8 @@ public:
                          const Matrix<T>& centers,
                          const Matrix<T>& dispersions,
                          const std::vector<T>& proportions,
-                         Matrix<T>& log_pkfki) const = 0;
+                         Matrix<T>& log_pkfki,
+                         ThreadPool* pool) const = 0;
 
     virtual Parameters<T> estimate(const Matrix<T>& X_T,
                           const Matrix<T>& C,
@@ -257,11 +258,11 @@ public:
 
     void density(const Matrix<T>& X_T, const Matrix<T>& centers,
                  const Matrix<T>& dispersions, const std::vector<T>& proportions,
-                 Matrix<T>& log_pkfki) const override {
+                 Matrix<T>& log_pkfki, ThreadPool* pool) const override {
         if (m_completeness != nullptr) {
-            density_mag_aware(X_T, centers, dispersions, proportions, log_pkfki);
+            density_mag_aware(X_T, centers, dispersions, proportions, log_pkfki, pool);
         } else {
-            density_standard(X_T, centers, dispersions, proportions, log_pkfki);
+            density_standard(X_T, centers, dispersions, proportions, log_pkfki, pool);
         }
     }
 
@@ -289,19 +290,16 @@ private:
 
     void density_standard(const Matrix<T>& X_T, const Matrix<T>& centers,
                            const Matrix<T>& dispersions, const std::vector<T>& proportions,
-                           Matrix<T>& log_pkfki) const {
+                           Matrix<T>& log_pkfki, ThreadPool* pool) const {
         const std::size_t D = X_T.rows();
         const std::size_t N = X_T.cols();
         const std::size_t K = centers.rows();
 
-        std::vector<T> log_fki(N);
-        std::vector<std::uint8_t> invalid(N);
+        dispatch(pool, 0, K, [&](std::size_t k) {
+            std::vector<T> log_fki(N, T(0));
+            std::vector<std::uint8_t> invalid(N, std::uint8_t(0));
 
-        for (std::size_t k = 0; k < K; ++k) {
             T log_pk = class_log_prior(proportions[k]);
-            std::fill(log_fki.begin(), log_fki.end(), T(0));
-            std::fill(invalid.begin(), invalid.end(), std::uint8_t(0));
-
             auto centers_k = centers.row(k);
             auto disp_k = dispersions.row(k);
 
@@ -322,7 +320,7 @@ private:
             }
 
             class_log_density(k, log_pk, log_fki, invalid, log_pkfki);
-        }
+        });
     }
 
     static void accumulate_bernoulli_term_simd(std::span<const T> x_col, T mean, T v, T weight,
@@ -361,17 +359,15 @@ private:
 
     void density_mag_aware(const Matrix<T>& X_T, const Matrix<T>& centers,
                             const Matrix<T>& dispersions, const std::vector<T>& proportions,
-                            Matrix<T>& log_pkfki) const {
+                            Matrix<T>& log_pkfki, ThreadPool* pool) const {
         const std::size_t D = X_T.rows();
         const std::size_t N = X_T.cols();
         const std::size_t K = centers.rows();
 
-        std::vector<T> log_fki(N);
+        dispatch(pool, 0, K, [&](std::size_t k) {
+            std::vector<T> log_fki(N, T(0));
 
-        for (std::size_t k = 0; k < K; ++k) {
             T log_pk = class_log_prior(proportions[k]);
-            std::fill(log_fki.begin(), log_fki.end(), T(0));
-
             auto centers_k = centers.row(k);
             auto disp_k = dispersions.row(k);
 
@@ -388,7 +384,7 @@ private:
             for (std::size_t i = 0; i < N; ++i) {
                 log_pkfki(i, k) = log_pk + log_fki[i];
             }
-        }
+        });
     }
 
     static void accumulate_mag_aware_term_simd(std::span<const T> x_col, T mean, T v, T weight,

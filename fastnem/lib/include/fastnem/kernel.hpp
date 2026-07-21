@@ -124,45 +124,53 @@ namespace nem {
         }
 
         static Criteria<T> compute_criteria(const Matrix<T>& C, const Matrix<T>& log_pkfki,
-                                             const Matrix<T>& contexts, T beta) {
+                                             const Matrix<T>& contexts, T beta,
+                                             ThreadPool* pool = nullptr) {
             const std::size_t N = C.rows();
             const std::size_t K = C.cols();
 
-            T d_crit = T(0);
-            T g = T(0);
-            for (std::size_t i = 0; i < N; ++i) {
+            T d_crit = parallel_sum<T>(pool, 0, N, [&](std::size_t i) {
                 auto c_row = C.row(i);
                 auto lp_row = log_pkfki.row(i);
-                auto ctx_row = contexts.row(i);
+                T acc = T(0);
                 for (std::size_t k = 0; k < K; ++k) {
                     T c = c_row[k];
                     if (c > T(0)) {
                         T log_c = std::log(std::max(c, PF<T>));
-                        d_crit += c * (lp_row[k] - log_c);
+                        acc += c * (lp_row[k] - log_c);
                     }
-                    g += c * ctx_row[k];
                 }
-            }
+                return acc;
+            });
+
+            T g = parallel_sum<T>(pool, 0, N, [&](std::size_t i) {
+                auto c_row = C.row(i);
+                auto ctx_row = contexts.row(i);
+                T acc = T(0);
+                for (std::size_t k = 0; k < K; ++k) {
+                    acc += c_row[k] * ctx_row[k];
+                }
+                return acc;
+            });
             T u = d_crit + T(0.5) * beta * g;
 
-            T l = T(0);
-            for (std::size_t i = 0; i < N; ++i) {
+            T l = parallel_sum<T>(pool, 0, N, [&](std::size_t i) {
                 auto lp_row = log_pkfki.row(i);
                 T maxlog = lp_row[0];
                 for (std::size_t k = 1; k < K; ++k) {
                     maxlog = std::max(maxlog, lp_row[k]);
                 }
-                if (std::isfinite(maxlog)) {
-                    T sumexp = T(0);
-                    for (std::size_t k = 0; k < K; ++k) {
-                        sumexp += std::exp(lp_row[k] - maxlog);
-                    }
-                    l += maxlog + std::log(std::max(sumexp, PF<T>));
+                if (!std::isfinite(maxlog)) {
+                    return T(0);
                 }
-            }
+                T sumexp = T(0);
+                for (std::size_t k = 0; k < K; ++k) {
+                    sumexp += std::exp(lp_row[k] - maxlog);
+                }
+                return maxlog + std::log(std::max(sumexp, PF<T>));
+            });
 
-            T z_sum = T(0);
-            for (std::size_t i = 0; i < N; ++i) {
+            T z_sum = parallel_sum<T>(pool, 0, N, [&](std::size_t i) {
                 auto ctx_row = contexts.row(i);
                 T maxbc = beta * ctx_row[0];
                 for (std::size_t k = 1; k < K; ++k) {
@@ -172,8 +180,8 @@ namespace nem {
                 for (std::size_t k = 0; k < K; ++k) {
                     sumexp += std::exp(beta * ctx_row[k] - maxbc);
                 }
-                z_sum += maxbc + std::log(sumexp);
-            }
+                return maxbc + std::log(sumexp);
+            });
             T z = -z_sum;
             T m = d_crit + beta * g + z;
 

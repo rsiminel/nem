@@ -82,13 +82,14 @@ namespace nem {
                 params = family->estimate(X_T, C, params ? &(*params) : nullptr, &pool);
 
                 family->density(X_T, params->centers, params->dispersions, params->proportions,
-                                 log_pkfki);
+                                 log_pkfki, &pool);
 
                 Matrix<T> old_C = C.clone();
                 Kernel<T>::e_step_seq(graph, log_pkfki, beta, C);
 
                 Kernel<T>::compute_all_contexts(graph, C, contexts, &pool);
-                Criteria<T> criteria = Kernel<T>::compute_criteria(C, log_pkfki, contexts, beta);
+                Criteria<T> criteria = Kernel<T>::compute_criteria(C, log_pkfki, contexts, beta,
+                                                                    &pool);
                 history.push_back(criteria);
                 n_iter = iter + 1;
 
@@ -139,7 +140,7 @@ namespace nem {
         }
 
         Matrix<T> log_pkfki_init(N, K);
-        family->density(X_T, ip.centers, floored_disp, ip.proportions, log_pkfki_init);
+        family->density(X_T, ip.centers, floored_disp, ip.proportions, log_pkfki_init, &pool);
 
         Matrix<T> zero_context(N, K, T(0));
         Kernel<T>::normalize_membership(log_pkfki_init, zero_context, T(0), C);

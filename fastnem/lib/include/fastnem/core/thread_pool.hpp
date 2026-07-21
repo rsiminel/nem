@@ -116,4 +116,33 @@ namespace nem {
         }
 
     }
+
+    template<class T, class F>
+    T parallel_sum(ThreadPool* pool, std::size_t begin, std::size_t end, F&& func) {
+        if (begin >= end) {
+            return T(0);
+        }
+
+        std::size_t n_threads = (pool != nullptr) ? pool->size() : std::size_t{1};
+        std::size_t t = end - begin;
+        std::size_t n_chunks = std::min(n_threads, t);
+        std::size_t chunk_size = (t + n_chunks - 1) / n_chunks;
+
+        std::vector<T> partials(n_chunks, T(0));
+        dispatch(pool, 0, n_chunks, [&](std::size_t c) {
+            std::size_t cbeg = begin + c * chunk_size;
+            std::size_t cend = std::min(end, cbeg + chunk_size);
+            T local = T(0);
+            for (std::size_t i = cbeg; i < cend; ++i) {
+                local += func(i);
+            }
+            partials[c] = local;
+        });
+
+        T total = T(0);
+        for (T p : partials) {
+            total += p;
+        }
+        return total;
+    }
 }
