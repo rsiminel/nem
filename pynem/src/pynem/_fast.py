@@ -12,10 +12,11 @@ import math
 import numpy as np
 
 try:
-    from numba import njit
+    from numba import njit, prange
     HAS_NUMBA = True
 except Exception:  # pragma: no cover - numba is an optional dependency
     HAS_NUMBA = False
+    prange = range
 
     def njit(*args, **kwargs):
         """No-op fallback so the module imports without numba."""
@@ -166,7 +167,7 @@ def density_laplace(Xf, observed, centers, dispersions, proportions,
             log_pkfki[i, k] = -np.inf if invalid else log_pk + log_fki
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def density_bernoulli(Xf, observed, centers, dispersions, proportions,
                        weights, has_weights, log_pkfki):
     N, D = Xf.shape
@@ -180,7 +181,9 @@ def density_bernoulli(Xf, observed, centers, dispersions, proportions,
             if v > _ZERO_DISP_TOL:
                 log_one_minus_v[d] = math.log(1.0 - v)
                 log_ratio[d] = math.log((1.0 - v) / v)
-        for i in range(N):
+
+        # each i writes only log_pkfki[i, k]
+        for i in prange(N):
             log_fki = 0.0
             invalid = False
             for d in range(D):
@@ -233,11 +236,13 @@ def density_bernoulli_mag(Xf, observed, centers, dispersions, proportions,
             log_pkfki[i, k] = log_pk + log_fki
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def inertia_accum(Xf, observed, C, centers, use_abs, Iner_KD):
     N, D = Xf.shape
     K = centers.shape[0]
-    for k in range(K):
+
+    # each k writes only Iner_KD[k, :]
+    for k in prange(K):
         for i in range(N):
             c = C[i, k]
             if c == 0.0:
