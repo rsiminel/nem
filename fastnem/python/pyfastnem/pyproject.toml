@@ -1,0 +1,24 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pyfastnem"
+version = "0.1.0"
+description = "Python bindings for fastnem"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.22"]
+
+[project.optional-dependencies]
+networkx = ["networkx>=2.8"]
+dev = ["pytest>=7.0", "networkx>=2.8"]
+
+[tool.scikit-build]
+minimum-version = "0.10"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/pyfastnem"]
+
+[tool.scikit-build.cmake]
+source-dir = "."
+build-type = "Release"
