@@ -31,7 +31,6 @@ find_package(Threads REQUIRED)
 target_link_libraries(fastnem INTERFACE Threads::Threads)
 
 add_subdirectory(app)
-add_subdirectory(benchs)
 
 include(FetchContent)
 

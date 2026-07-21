@@ -1,2 +1,0 @@
-add_executable(bench_pangenome bench_pangenome.cpp)
-target_link_libraries(bench_pangenome PRIVATE fastnem)
