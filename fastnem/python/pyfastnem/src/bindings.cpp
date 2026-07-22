@@ -99,7 +99,13 @@ namespace {
 
 }
 
-NB_MODULE(_core, m) {
+#ifndef FASTNEM_MODULE_NAME
+#  define FASTNEM_MODULE_NAME _core
+#endif
+
+#define NB_MODULE_WRAP(name, m) NB_MODULE(name, m)
+
+NB_MODULE_WRAP(FASTNEM_MODULE_NAME, m) {
     m.doc() = "bindings for fastnem";
 
     m.def("partition_pangenome_f64", &partition_pangenome_impl<double>, nb::arg("presence"),
