@@ -11,11 +11,11 @@
       devShells = forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system}; in {
           default = pkgs.mkShell {
+            name = "fastnem";
             packages = [
               pkgs.gcc
               pkgs.cmake
               pkgs.ninja
-              pkgs.python3
               pkgs.uv
               pkgs.ccls
             ];
