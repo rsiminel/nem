@@ -194,7 +194,7 @@ def _compute_log_density_numpy(Xf, observed, centers, dispersions, proportions,
 def estimate_parameters(X, C, family, dispersion_model, proportion_model,
                         miss_mode="replace", old_centers=None,
                         old_dispersions=None, weights=None, completeness=None,
-                        observed=None, Xf=None, all_observed=None):
+                        observed=None, Xf=None, all_observed=None, obs_f=None):
     """M-step: estimate model parameters from soft classification.
 
     Parameters
@@ -228,6 +228,10 @@ def estimate_parameters(X, C, family, dispersion_model, proportion_model,
         Whether ``observed`` is entirely True. Like the two above it is fixed
         for a whole fit, so callers that know it should pass it; ``None``
         (default) derives it here with a full pass over ``observed``.
+    obs_f : (N, D) float array or None
+        ``observed`` as float64, for the two matmuls in the Bernoulli centre
+        estimators. Fixed for a whole fit; passing it in avoids rebuilding a
+        full (N, D) array on every M-step. ``None`` (default) builds it.
 
     Returns
     -------
@@ -270,9 +274,9 @@ def estimate_parameters(X, C, family, dispersion_model, proportion_model,
     if comp_bern:
         # MAG-aware: de-bias presence by completeness; sets mode AND dispersion.
         centers, dispersions = _estimate_bernoulli_completeness(
-            C, observed, completeness, Xf)
+            C, observed, completeness, Xf, obs_f=obs_f)
     elif family == Family.BERNOULLI:
-        centers = _estimate_bernoulli_centers(C, observed, Xf)
+        centers = _estimate_bernoulli_centers(C, observed, Xf, obs_f=obs_f)
     elif family == Family.LAPLACE:
         centers = _estimate_laplace_centers(X, C, observed, K, D, N_K)
     else:
@@ -392,7 +396,7 @@ def _estimate_mean_centers(C, observed, K, D, N, N_K, N_KD, miss_mode,
     return centers
 
 
-def _estimate_bernoulli_centers(C, observed, Xf):
+def _estimate_bernoulli_centers(C, observed, Xf, obs_f=None):
     """Bernoulli center = binary mode (weighted median of {0,1}), vectorised.
 
     For 0/1 data the C-weighted median equals 1 iff the weighted fraction of 1s
@@ -404,7 +408,7 @@ def _estimate_bernoulli_centers(C, observed, Xf):
     -------
     centers : (K, D) array of {0.0, 1.0}
     """
-    obs = observed.astype(float)
+    obs = observed.astype(float) if obs_f is None else obs_f
     W_total = C.T @ obs        # (K, D) sum of weights over observed entries
     W_ones = C.T @ Xf          # (K, D) weighted count of 1s
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -412,7 +416,7 @@ def _estimate_bernoulli_centers(C, observed, Xf):
     return (frac1 > 0.5).astype(float)
 
 
-def _estimate_bernoulli_completeness(C, observed, completeness, Xf):
+def _estimate_bernoulli_completeness(C, observed, completeness, Xf, obs_f=None):
     """MAG-aware Bernoulli mode + dispersion, de-biased by genome completeness.
 
     The observed presence fraction ``frac`` of a class in genome ``j`` is
@@ -427,7 +431,7 @@ def _estimate_bernoulli_completeness(C, observed, completeness, Xf):
     centers : (K, D) array of {0.0, 1.0}
     dispersions : (K, D) array — epsilon in [VAR_FLOOR, 0.5]
     """
-    obs = observed.astype(float)
+    obs = observed.astype(float) if obs_f is None else obs_f
     W_total = C.T @ obs
     W_ones = C.T @ Xf
     with np.errstate(invalid="ignore", divide="ignore"):
