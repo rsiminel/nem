@@ -102,116 +102,168 @@ def seq_sweep(CM, log_pkfki, indptr, indices, data, beta, harden):
 _PROB_FLOOR = 1e-20
 _ZERO_DISP_TOL = 1e-20
 
-
-@njit(cache=True)
-def density_normal(Xf, observed, centers, dispersions, proportions,
-                    weights, has_weights, log_pkfki):
-    N, D = Xf.shape
-    K = centers.shape[0]
-    log_coef = np.empty(D)
-    for k in range(K):
-        log_pk = math.log(max(proportions[k], _PROB_FLOOR))
-        for d in range(D):
-            v = dispersions[k, d]
-            if v > _ZERO_DISP_TOL:
-                log_coef[d] = -0.5 * math.log(2.0 * math.pi * v)
-        for i in range(N):
-            log_fki = 0.0
-            invalid = False
-            for d in range(D):
-                if not observed[i, d]:
-                    continue
-                v = dispersions[k, d]
-                diff = Xf[i, d] - centers[k, d]
-                if v <= _ZERO_DISP_TOL:
-                    if abs(diff) > _ZERO_DISP_TOL:
-                        if (not has_weights) or weights[d] > 0.0:
-                            invalid = True
-                            break
-                    continue
-                w = weights[d] if has_weights else 1.0
-                term = log_coef[d] - 0.5 * diff * diff / v
-                log_fki += term * w
-            log_pkfki[i, k] = -np.inf if invalid else log_pk + log_fki
+# The four density kernels share a shape: per-(class, variable) constants that
+# do not depend on the observation, then one pass over the nodes. Both parts
+# used to sit inside a `for k` loop, so the constants were rebuilt per class
+# (harmless) and, for the one parallel kernel, the thread team was entered once
+# per class instead of once per call. Hoisting the constants to (K, D) lets the
+# node loop be a single prange, and lets the other three kernels have one too:
+# node i only ever writes log_pkfki[i, :], so there is no reduction and the
+# per-(i, k) accumulation order over d is exactly what it was.
 
 
 @njit(cache=True)
-def density_laplace(Xf, observed, centers, dispersions, proportions,
-                     weights, has_weights, log_pkfki):
-    N, D = Xf.shape
-    K = centers.shape[0]
-    neg_log_2v = np.empty(D)
+def _bernoulli_consts(dispersions, proportions, K, D):
+    """log(1-eps), log((1-eps)/eps) and the degenerate mask, per (class, var)."""
+    log_pk = np.empty(K)
+    a = np.zeros((K, D))
+    b = np.zeros((K, D))
+    degen = np.zeros((K, D), dtype=np.bool_)
     for k in range(K):
-        log_pk = math.log(max(proportions[k], _PROB_FLOOR))
+        log_pk[k] = math.log(max(proportions[k], _PROB_FLOOR))
         for d in range(D):
             v = dispersions[k, d]
             if v > _ZERO_DISP_TOL:
-                neg_log_2v[d] = -math.log(2.0 * v)
-        for i in range(N):
-            log_fki = 0.0
-            invalid = False
-            for d in range(D):
-                if not observed[i, d]:
-                    continue
-                v = dispersions[k, d]
-                diff = Xf[i, d] - centers[k, d]
-                if v <= _ZERO_DISP_TOL:
-                    if abs(diff) > _ZERO_DISP_TOL:
-                        if (not has_weights) or weights[d] > 0.0:
-                            invalid = True
-                            break
-                    continue
-                w = weights[d] if has_weights else 1.0
-                term = neg_log_2v[d] - abs(diff) / v
-                log_fki += term * w
-            log_pkfki[i, k] = -np.inf if invalid else log_pk + log_fki
+                a[k, d] = math.log(1.0 - v)
+                b[k, d] = math.log((1.0 - v) / v)
+            else:
+                degen[k, d] = True
+    return log_pk, a, b, degen
 
 
 @njit(cache=True, parallel=True)
 def density_bernoulli(Xf, observed, centers, dispersions, proportions,
-                       weights, has_weights, log_pkfki):
+                      weights, has_weights, all_observed, log_pkfki):
     N, D = Xf.shape
     K = centers.shape[0]
-    log_one_minus_v = np.empty(D)
-    log_ratio = np.empty(D)
+    log_pk, log_one_minus_v, log_ratio, degen = _bernoulli_consts(
+        dispersions, proportions, K, D)
+
+    if all_observed:
+        # nothing missing: the per-element observed[] load and branch below is
+        # pure overhead, and this is the path every PPanGGOLiN run takes
+        for i in prange(N):
+            for k in range(K):
+                log_fki = 0.0
+                invalid = False
+                for d in range(D):
+                    diff = Xf[i, d] - centers[k, d]
+                    if degen[k, d]:
+                        if abs(diff) > _ZERO_DISP_TOL:
+                            if (not has_weights) or weights[d] > 0.0:
+                                invalid = True
+                                break
+                        continue
+                    w = weights[d] if has_weights else 1.0
+                    log_fki += (log_one_minus_v[k, d]
+                                - abs(diff) * log_ratio[k, d]) * w
+                log_pkfki[i, k] = -np.inf if invalid else log_pk[k] + log_fki
+    else:
+        for i in prange(N):
+            for k in range(K):
+                log_fki = 0.0
+                invalid = False
+                for d in range(D):
+                    if not observed[i, d]:
+                        continue
+                    diff = Xf[i, d] - centers[k, d]
+                    if degen[k, d]:
+                        if abs(diff) > _ZERO_DISP_TOL:
+                            if (not has_weights) or weights[d] > 0.0:
+                                invalid = True
+                                break
+                        continue
+                    w = weights[d] if has_weights else 1.0
+                    log_fki += (log_one_minus_v[k, d]
+                                - abs(diff) * log_ratio[k, d]) * w
+                log_pkfki[i, k] = -np.inf if invalid else log_pk[k] + log_fki
+
+
+@njit(cache=True, parallel=True)
+def density_normal(Xf, observed, centers, dispersions, proportions,
+                   weights, has_weights, all_observed, log_pkfki):
+    N, D = Xf.shape
+    K = centers.shape[0]
+    log_pk = np.empty(K)
+    log_coef = np.zeros((K, D))
+    degen = np.zeros((K, D), dtype=np.bool_)
     for k in range(K):
-        log_pk = math.log(max(proportions[k], _PROB_FLOOR))
+        log_pk[k] = math.log(max(proportions[k], _PROB_FLOOR))
         for d in range(D):
             v = dispersions[k, d]
             if v > _ZERO_DISP_TOL:
-                log_one_minus_v[d] = math.log(1.0 - v)
-                log_ratio[d] = math.log((1.0 - v) / v)
+                log_coef[k, d] = -0.5 * math.log(2.0 * math.pi * v)
+            else:
+                degen[k, d] = True
 
-        # each i writes only log_pkfki[i, k]
-        for i in prange(N):
+    for i in prange(N):
+        for k in range(K):
             log_fki = 0.0
             invalid = False
             for d in range(D):
-                if not observed[i, d]:
+                if not (all_observed or observed[i, d]):
                     continue
-                v = dispersions[k, d]
                 diff = Xf[i, d] - centers[k, d]
-                if v <= _ZERO_DISP_TOL:
+                if degen[k, d]:
                     if abs(diff) > _ZERO_DISP_TOL:
                         if (not has_weights) or weights[d] > 0.0:
                             invalid = True
                             break
                     continue
                 w = weights[d] if has_weights else 1.0
-                term = log_one_minus_v[d] - abs(diff) * log_ratio[d]
-                log_fki += term * w
-            log_pkfki[i, k] = -np.inf if invalid else log_pk + log_fki
+                log_fki += (log_coef[k, d]
+                            - 0.5 * diff * diff / dispersions[k, d]) * w
+            log_pkfki[i, k] = -np.inf if invalid else log_pk[k] + log_fki
 
 
-@njit(cache=True)
-def density_bernoulli_mag(Xf, observed, centers, dispersions, proportions,
-                          completeness, weights, has_weights, log_pkfki):
+@njit(cache=True, parallel=True)
+def density_laplace(Xf, observed, centers, dispersions, proportions,
+                    weights, has_weights, all_observed, log_pkfki):
     N, D = Xf.shape
     K = centers.shape[0]
-    log_one_minus_mu_eff = np.empty(D)
-    log_diff = np.empty(D)
+    log_pk = np.empty(K)
+    neg_log_2v = np.zeros((K, D))
+    degen = np.zeros((K, D), dtype=np.bool_)
     for k in range(K):
-        log_pk = math.log(max(proportions[k], _PROB_FLOOR))
+        log_pk[k] = math.log(max(proportions[k], _PROB_FLOOR))
+        for d in range(D):
+            v = dispersions[k, d]
+            if v > _ZERO_DISP_TOL:
+                neg_log_2v[k, d] = -math.log(2.0 * v)
+            else:
+                degen[k, d] = True
+
+    for i in prange(N):
+        for k in range(K):
+            log_fki = 0.0
+            invalid = False
+            for d in range(D):
+                if not (all_observed or observed[i, d]):
+                    continue
+                diff = Xf[i, d] - centers[k, d]
+                if degen[k, d]:
+                    if abs(diff) > _ZERO_DISP_TOL:
+                        if (not has_weights) or weights[d] > 0.0:
+                            invalid = True
+                            break
+                    continue
+                w = weights[d] if has_weights else 1.0
+                log_fki += (neg_log_2v[k, d]
+                            - abs(diff) / dispersions[k, d]) * w
+            log_pkfki[i, k] = -np.inf if invalid else log_pk[k] + log_fki
+
+
+@njit(cache=True, parallel=True)
+def density_bernoulli_mag(Xf, observed, centers, dispersions, proportions,
+                          completeness, weights, has_weights, all_observed,
+                          log_pkfki):
+    N, D = Xf.shape
+    K = centers.shape[0]
+    log_pk = np.empty(K)
+    log_one_minus_mu_eff = np.zeros((K, D))
+    log_diff = np.zeros((K, D))
+    for k in range(K):
+        log_pk[k] = math.log(max(proportions[k], _PROB_FLOOR))
         for d in range(D):
             v = dispersions[k, d]
             safe_v = 0.5 if v <= _ZERO_DISP_TOL else v
@@ -221,19 +273,20 @@ def density_bernoulli_mag(Xf, observed, centers, dispersions, proportions,
                 mu_eff = _PROB_FLOOR
             elif mu_eff > 1.0 - _PROB_FLOOR:
                 mu_eff = 1.0 - _PROB_FLOOR
-            log_mu_eff = math.log(mu_eff)
             lome = math.log(1.0 - mu_eff)
-            log_one_minus_mu_eff[d] = lome
-            log_diff[d] = log_mu_eff - lome
-        for i in range(N):
+            log_one_minus_mu_eff[k, d] = lome
+            log_diff[k, d] = math.log(mu_eff) - lome
+
+    for i in prange(N):
+        for k in range(K):
             log_fki = 0.0
             for d in range(D):
-                if not observed[i, d]:
+                if not (all_observed or observed[i, d]):
                     continue
                 w = weights[d] if has_weights else 1.0
-                term = log_one_minus_mu_eff[d] + Xf[i, d] * log_diff[d]
-                log_fki += term * w
-            log_pkfki[i, k] = log_pk + log_fki
+                log_fki += (log_one_minus_mu_eff[k, d]
+                            + Xf[i, d] * log_diff[k, d]) * w
+            log_pkfki[i, k] = log_pk[k] + log_fki
 
 
 @njit(cache=True, parallel=True)
