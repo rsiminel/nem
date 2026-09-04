@@ -264,7 +264,8 @@ def _compute_log_density_numpy(Xf, observed, centers, dispersions, proportions,
 def estimate_parameters(X, C, family, dispersion_model, proportion_model,
                         miss_mode="replace", old_centers=None,
                         old_dispersions=None, weights=None, completeness=None,
-                        observed=None, Xf=None, all_observed=None):
+                        observed=None, Xf=None, all_observed=None,
+                        binary=None):
     """M-step: estimate model parameters from soft classification.
 
     Parameters
@@ -312,6 +313,7 @@ def estimate_parameters(X, C, family, dispersion_model, proportion_model,
     if all_observed is None:
         all_observed = bool(observed.all())
     comp_bern = family == Family.BERNOULLI and completeness is not None
+    W_ones = None   # set by the Bernoulli centre estimator, reused for inertia
 
     # Class sizes
     raw_N_K = C.sum(axis=0)            # (K,) before clamping, for empty detection
@@ -342,8 +344,8 @@ def estimate_parameters(X, C, family, dispersion_model, proportion_model,
         centers, dispersions = _estimate_bernoulli_completeness(
             C, observed, completeness, Xf, all_observed=all_observed)
     elif family == Family.BERNOULLI:
-        centers = _estimate_bernoulli_centers(C, observed, Xf,
-                                              all_observed=all_observed)
+        centers, W_ones = _estimate_bernoulli_centers(C, observed, Xf,
+                                                     all_observed=all_observed)
     elif family == Family.LAPLACE:
         centers = _estimate_laplace_centers(X, C, observed, K, D, N_K)
     else:
@@ -353,7 +355,16 @@ def estimate_parameters(X, C, family, dispersion_model, proportion_model,
     if not comp_bern:
         use_abs = family != Family.NORMAL
         Iner_KD = np.zeros((K, D))
-        if HAS_NUMBA:
+        if (binary and family == Family.BERNOULLI and all_observed
+                and W_ones is not None):
+            # The same binary expansion as the density kernel: |x-c| = x+c-2xc,
+            # so   sum_i C[i,k] |x_id - c_kd|
+            #        = W_ones[k,d] (1 - 2 c_kd) + c_kd sum_i C[i,k]
+            # and W_ones = C.T @ Xf was already built for the centres. The whole
+            # (N, K, D) accumulation collapses to (K, D) arithmetic on a matmul
+            # already paid for -- the M-step stops touching the data twice.
+            Iner_KD = W_ones * (1.0 - 2.0 * centers) + centers * raw_N_K[:, None]
+        elif HAS_NUMBA:
             _Xf = np.ascontiguousarray(Xf, dtype=np.float64)
             _ob = np.ascontiguousarray(observed)
             _C = np.ascontiguousarray(C, dtype=np.float64)
@@ -499,12 +510,16 @@ def _estimate_bernoulli_centers(C, observed, Xf, all_observed=False):
     Returns
     -------
     centers : (K, D) array of {0.0, 1.0}
+    W_ones : (K, D) array
+        ``C.T @ Xf``, the weighted count of 1s. Returned because the M-step's
+        inertia is a closed form in it (see estimate_parameters), so the only
+        pass over the data in the whole M-step is this one matmul.
     """
     W_total = _weight_totals(C, observed, all_observed)   # (K, D) or (K, 1)
     W_ones = C.T @ Xf          # (K, D) weighted count of 1s
     with np.errstate(invalid="ignore", divide="ignore"):
         frac1 = np.where(W_total > 0, W_ones / np.maximum(W_total, DIV_GUARD), 0.0)
-    return (frac1 > 0.5).astype(float)
+    return (frac1 > 0.5).astype(float), W_ones
 
 
 def _estimate_bernoulli_completeness(C, observed, completeness, Xf,

@@ -17,6 +17,21 @@ from .models import (
 from .spatial import NeighborhoodSystem
 
 
+def _is_binary(Xf, block=4096):
+    """True if every entry of Xf is 0.0 or 1.0, without an (N, D) temporary.
+
+    The obvious np.all((Xf == 0) | (Xf == 1)) allocates three full (N, D) bool
+    arrays; on a 15931 x 2002 pangenome that cost 170 MB of peak for a question
+    answered once per fit. Scanning in row blocks bounds it, and a non-binary
+    matrix usually fails in the first block.
+    """
+    for lo in range(0, Xf.shape[0], block):
+        b = Xf[lo:lo + block]
+        if not ((b == 0.0) | (b == 1.0)).all():
+            return False
+    return True
+
+
 class NEM:
     """Neighborhood EM for spatial clustering on graphs.
 
@@ -359,7 +374,7 @@ class NEM:
         # fixed for the whole fit, and lets the M-step skip its (N, D) work
         all_observed = bool(observed.all())
         # binary data unlocks the Bernoulli closed form; fixed for the fit
-        binary = all_observed and bool(np.all((Xf == 0.0) | (Xf == 1.0)))
+        binary = all_observed and _is_binary(Xf)
 
         # Initialize
         C = self._initialize(X, ns, K, rng, observed=observed, Xf=Xf)
@@ -374,7 +389,8 @@ class NEM:
             # M-step (the first one has no previous parameters to reuse)
             if iteration == 0:
                 params = self._first_m_step(X, C, observed=observed, Xf=Xf,
-                                            all_observed=all_observed)
+                                            all_observed=all_observed,
+                                            binary=binary)
             else:
                 params = estimate_parameters(
                     X, C, self.family, self.dispersion, self.proportion,
@@ -383,6 +399,7 @@ class NEM:
                     old_dispersions=params["dispersions"],
                     weights=self._weights, completeness=self._completeness,
                     observed=observed, Xf=Xf, all_observed=all_observed,
+                    binary=binary,
                 )
 
             # Beta estimation (pseudo-gradient)
@@ -432,12 +449,13 @@ class NEM:
             "history": history,
         }
 
-    def _first_m_step(self, X, C, observed=None, Xf=None, all_observed=None):
+    def _first_m_step(self, X, C, observed=None, Xf=None, all_observed=None,
+                      binary=None):
         """First M-step (no old parameters)."""
         return estimate_parameters(
             X, C, self.family, self.dispersion, self.proportion,
             miss_mode=self.missing, weights=self._weights, completeness=self._completeness,
-            observed=observed, Xf=Xf, all_observed=all_observed,
+            observed=observed, Xf=Xf, all_observed=all_observed, binary=binary,
         )
 
     def _initialize(self, X, ns, K, rng, observed=None, Xf=None):
