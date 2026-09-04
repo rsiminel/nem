@@ -194,7 +194,7 @@ def _compute_log_density_numpy(Xf, observed, centers, dispersions, proportions,
 def estimate_parameters(X, C, family, dispersion_model, proportion_model,
                         miss_mode="replace", old_centers=None,
                         old_dispersions=None, weights=None, completeness=None,
-                        observed=None, Xf=None):
+                        observed=None, Xf=None, all_observed=None):
     """M-step: estimate model parameters from soft classification.
 
     Parameters
@@ -224,6 +224,10 @@ def estimate_parameters(X, C, family, dispersion_model, proportion_model,
     observed, Xf : (N, D) arrays or None
         Precomputed ``~np.isnan(X)`` / ``np.where(observed, X, 0.0)`` -- see
         ``compute_log_density``. ``None`` (default) recomputes them here.
+    all_observed : bool or None
+        Whether ``observed`` is entirely True. Like the two above it is fixed
+        for a whole fit, so callers that know it should pass it; ``None``
+        (default) derives it here with a full pass over ``observed``.
 
     Returns
     -------
@@ -235,17 +239,26 @@ def estimate_parameters(X, C, family, dispersion_model, proportion_model,
         observed = ~np.isnan(X)  # (N, D)
     if Xf is None:
         Xf = np.where(observed, X, 0.0)
-    unobserved = ~observed
+    if all_observed is None:
+        all_observed = bool(observed.all())
     comp_bern = family == Family.BERNOULLI and completeness is not None
 
     # Class sizes
     raw_N_K = C.sum(axis=0)            # (K,) before clamping, for empty detection
     N_K = np.maximum(raw_N_K, DIV_GUARD)
 
-    # Per-class, per-variable observed sizes
-    N_KD = np.zeros((K, D))
-    for k in range(K):
-        N_KD[k] = (C[:, k:k+1] * observed).sum(axis=0)
+    # Per-class, per-variable observed sizes. With nothing missing every column
+    # sees the same weight, so N_KD is just raw_N_K broadcast over D -- and the
+    # loop below is three full (N, D) float64 temporaries computing a value we
+    # already have. That is the path every PPanGGOLiN run takes: presence is a
+    # dense 0/1 matrix. On a 15931 x 2002 pangenome the loop costs 276 ms per
+    # M-step against 0.1 ms for the broadcast, and it ran on every iteration.
+    if all_observed:
+        N_KD = np.repeat(raw_N_K[:, None], D, axis=1)
+    else:
+        N_KD = np.zeros((K, D))
+        for k in range(K):
+            N_KD[k] = (C[:, k:k+1] * observed).sum(axis=0)
     N_KD = np.maximum(N_KD, DIV_GUARD)
 
     # --- Centers ---
@@ -276,6 +289,7 @@ def estimate_parameters(X, C, family, dispersion_model, proportion_model,
                           np.ascontiguousarray(centers, dtype=np.float64),
                           use_abs, Iner_KD)
         else:
+            unobserved = ~observed
             for k in range(K):
                 diff = Xf - centers[k]
                 diff[unobserved] = 0.0

@@ -356,6 +356,8 @@ class NEM:
 
         observed = ~np.isnan(X)
         Xf = np.where(observed, X, 0.0)
+        # fixed for the whole fit, and lets the M-step skip its (N, D) work
+        all_observed = bool(observed.all())
 
         # Initialize
         C = self._initialize(X, ns, K, rng, observed=observed, Xf=Xf)
@@ -369,7 +371,8 @@ class NEM:
         for iteration in range(self.max_iter):
             # M-step (the first one has no previous parameters to reuse)
             if iteration == 0:
-                params = self._first_m_step(X, C, observed=observed, Xf=Xf)
+                params = self._first_m_step(X, C, observed=observed, Xf=Xf,
+                                            all_observed=all_observed)
             else:
                 params = estimate_parameters(
                     X, C, self.family, self.dispersion, self.proportion,
@@ -377,7 +380,7 @@ class NEM:
                     old_centers=params["centers"],
                     old_dispersions=params["dispersions"],
                     weights=self._weights, completeness=self._completeness,
-                    observed=observed, Xf=Xf,
+                    observed=observed, Xf=Xf, all_observed=all_observed,
                 )
 
             # Beta estimation (pseudo-gradient)
@@ -426,12 +429,12 @@ class NEM:
             "history": history,
         }
 
-    def _first_m_step(self, X, C, observed=None, Xf=None):
+    def _first_m_step(self, X, C, observed=None, Xf=None, all_observed=None):
         """First M-step (no old parameters)."""
         return estimate_parameters(
             X, C, self.family, self.dispersion, self.proportion,
             miss_mode=self.missing, weights=self._weights, completeness=self._completeness,
-            observed=observed, Xf=Xf,
+            observed=observed, Xf=Xf, all_observed=all_observed,
         )
 
     def _initialize(self, X, ns, K, rng, observed=None, Xf=None):
