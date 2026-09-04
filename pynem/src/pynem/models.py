@@ -6,6 +6,8 @@ import numpy as np
 
 from ._fast import (
     HAS_NUMBA,
+    _inertia_chunks,
+    inertia_accum_byclass,
     density_bernoulli,
     density_bernoulli_mag,
     density_laplace,
@@ -288,11 +290,17 @@ def estimate_parameters(X, C, family, dispersion_model, proportion_model,
         use_abs = family != Family.NORMAL
         Iner_KD = np.zeros((K, D))
         if HAS_NUMBA:
-            inertia_accum(np.ascontiguousarray(Xf, dtype=np.float64),
-                          np.ascontiguousarray(observed),
-                          np.ascontiguousarray(C, dtype=np.float64),
-                          np.ascontiguousarray(centers, dtype=np.float64),
-                          use_abs, Iner_KD)
+            _Xf = np.ascontiguousarray(Xf, dtype=np.float64)
+            _ob = np.ascontiguousarray(observed)
+            _C = np.ascontiguousarray(C, dtype=np.float64)
+            _cen = np.ascontiguousarray(centers, dtype=np.float64)
+            _nc = _inertia_chunks(N, K, D)
+            if _nc:
+                inertia_accum(_Xf, _ob, _C, _cen, use_abs, all_observed,
+                              _nc, Iner_KD)
+            else:
+                inertia_accum_byclass(_Xf, _ob, _C, _cen, use_abs,
+                                      all_observed, Iner_KD)
         else:
             unobserved = ~observed
             for k in range(K):
