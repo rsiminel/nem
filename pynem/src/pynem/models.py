@@ -270,9 +270,10 @@ def estimate_parameters(X, C, family, dispersion_model, proportion_model,
     if comp_bern:
         # MAG-aware: de-bias presence by completeness; sets mode AND dispersion.
         centers, dispersions = _estimate_bernoulli_completeness(
-            C, observed, completeness, Xf)
+            C, observed, completeness, Xf, all_observed=all_observed)
     elif family == Family.BERNOULLI:
-        centers = _estimate_bernoulli_centers(C, observed, Xf)
+        centers = _estimate_bernoulli_centers(C, observed, Xf,
+                                              all_observed=all_observed)
     elif family == Family.LAPLACE:
         centers = _estimate_laplace_centers(X, C, observed, K, D, N_K)
     else:
@@ -392,7 +393,26 @@ def _estimate_mean_centers(C, observed, K, D, N, N_K, N_KD, miss_mode,
     return centers
 
 
-def _estimate_bernoulli_centers(C, observed, Xf):
+def _weight_totals(C, observed, all_observed):
+    """Per-class, per-variable total weight over observed entries.
+
+    With nothing missing every column sums the same weights, so the (K, D)
+    result is ``C.sum(axis=0)`` in every column -- returned as (K, 1) to
+    broadcast, which skips both a full (N, D) float cast and the matmul that
+    consumed it (49 ms per M-step on 15931 x 2002).
+
+    Not bit-identical to the matmul it replaces: BLAS accumulates in blocks
+    and numpy pairwise, so the totals differ by up to ~32 ULP. Callers use
+    this only as the denominator of a fraction thresholded at 0.5, which is
+    unaffected unless that fraction sits within ~1e-11 of the tie the code
+    already breaks arbitrarily.
+    """
+    if all_observed:
+        return C.sum(axis=0)[:, None]
+    return C.T @ observed.astype(float)
+
+
+def _estimate_bernoulli_centers(C, observed, Xf, all_observed=False):
     """Bernoulli center = binary mode (weighted median of {0,1}), vectorised.
 
     For 0/1 data the C-weighted median equals 1 iff the weighted fraction of 1s
@@ -404,15 +424,15 @@ def _estimate_bernoulli_centers(C, observed, Xf):
     -------
     centers : (K, D) array of {0.0, 1.0}
     """
-    obs = observed.astype(float)
-    W_total = C.T @ obs        # (K, D) sum of weights over observed entries
+    W_total = _weight_totals(C, observed, all_observed)   # (K, D) or (K, 1)
     W_ones = C.T @ Xf          # (K, D) weighted count of 1s
     with np.errstate(invalid="ignore", divide="ignore"):
         frac1 = np.where(W_total > 0, W_ones / np.maximum(W_total, DIV_GUARD), 0.0)
     return (frac1 > 0.5).astype(float)
 
 
-def _estimate_bernoulli_completeness(C, observed, completeness, Xf):
+def _estimate_bernoulli_completeness(C, observed, completeness, Xf,
+                                     all_observed=False):
     """MAG-aware Bernoulli mode + dispersion, de-biased by genome completeness.
 
     The observed presence fraction ``frac`` of a class in genome ``j`` is
@@ -427,8 +447,7 @@ def _estimate_bernoulli_completeness(C, observed, completeness, Xf):
     centers : (K, D) array of {0.0, 1.0}
     dispersions : (K, D) array — epsilon in [VAR_FLOOR, 0.5]
     """
-    obs = observed.astype(float)
-    W_total = C.T @ obs
+    W_total = _weight_totals(C, observed, all_observed)
     W_ones = C.T @ Xf
     with np.errstate(invalid="ignore", divide="ignore"):
         frac1 = np.where(W_total > 0, W_ones / np.maximum(W_total, DIV_GUARD), 0.0)
