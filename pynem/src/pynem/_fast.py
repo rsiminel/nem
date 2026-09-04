@@ -123,6 +123,11 @@ _ZERO_DISP_TOL = 1e-20
 # node loop be a single prange, and lets the other three kernels have one too:
 # node i only ever writes log_pkfki[i, :], so there is no reduction and the
 # per-(i, k) accumulation order over d is exactly what it was.
+#
+# The trade is scratch: the constants were a D-sized buffer overwritten once
+# per class, and are now (K, D) -- K*D*17 bytes, 102 KB at PPanGGOLiN's default
+# K=3 with 2002 genomes, but linear in K, which is a free parameter here. It
+# stays small relative to Xf (N*D*8) for any N worth partitioning.
 
 
 @njit(cache=True)
