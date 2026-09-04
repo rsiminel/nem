@@ -358,6 +358,8 @@ class NEM:
         Xf = np.where(observed, X, 0.0)
         # fixed for the whole fit, and lets the M-step skip its (N, D) work
         all_observed = bool(observed.all())
+        # binary data unlocks the Bernoulli closed form; fixed for the fit
+        binary = all_observed and bool(np.all((Xf == 0.0) | (Xf == 1.0)))
 
         # Initialize
         C = self._initialize(X, ns, K, rng, observed=observed, Xf=Xf)
@@ -394,6 +396,7 @@ class NEM:
                 params["proportions"], self.family,
                 weights=self._weights, completeness=self._completeness,
                 observed=observed, Xf=Xf, all_observed=all_observed,
+                binary=binary,
             )
 
             # E-step
