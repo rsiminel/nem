@@ -393,7 +393,7 @@ class NEM:
                 X, params["centers"], params["dispersions"],
                 params["proportions"], self.family,
                 weights=self._weights, completeness=self._completeness,
-                observed=observed, Xf=Xf,
+                observed=observed, Xf=Xf, all_observed=all_observed,
             )
 
             # E-step

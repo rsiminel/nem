@@ -55,7 +55,8 @@ class Proportion(Enum):
 
 
 def compute_log_density(X, centers, dispersions, proportions, family,
-                        weights=None, completeness=None, observed=None, Xf=None):
+                        weights=None, completeness=None, observed=None, Xf=None,
+                        all_observed=None):
     """Compute log(p_k * f_k(x_i)) for all i and k.
 
     Parameters
@@ -94,16 +95,19 @@ def compute_log_density(X, centers, dispersions, proportions, family,
         observed = ~np.isnan(X)            # (N, D)
     if Xf is None:
         Xf = np.where(observed, X, 0.0)    # NaN -> 0 (these terms are masked out)
+    if all_observed is None:
+        all_observed = bool(observed.all())
 
     if HAS_NUMBA:
         return _compute_log_density_numba(Xf, observed, centers, dispersions,
-                                          proportions, family, weights, completeness)
+                                          proportions, family, weights, completeness,
+                                          all_observed)
     return _compute_log_density_numpy(Xf, observed, centers, dispersions,
                                       proportions, family, weights, completeness)
 
 
 def _compute_log_density_numba(Xf, observed, centers, dispersions, proportions,
-                               family, weights, completeness):
+                               family, weights, completeness, all_observed):
     N, D = Xf.shape
     K = centers.shape[0]
     log_pkfki = np.empty((N, K))
@@ -117,17 +121,17 @@ def _compute_log_density_numba(Xf, observed, centers, dispersions, proportions,
 
     if family == Family.NORMAL:
         density_normal(Xf_c, observed_c, centers_c, dispersions_c, proportions_c,
-                       w, has_weights, log_pkfki)
+                       w, has_weights, all_observed, log_pkfki)
     elif family == Family.LAPLACE:
         density_laplace(Xf_c, observed_c, centers_c, dispersions_c, proportions_c,
-                        w, has_weights, log_pkfki)
+                        w, has_weights, all_observed, log_pkfki)
     elif completeness is None:
         density_bernoulli(Xf_c, observed_c, centers_c, dispersions_c, proportions_c,
-                          w, has_weights, log_pkfki)
+                          w, has_weights, all_observed, log_pkfki)
     else:
         gamma = np.ascontiguousarray(completeness, dtype=np.float64)
         density_bernoulli_mag(Xf_c, observed_c, centers_c, dispersions_c, proportions_c,
-                              gamma, w, has_weights, log_pkfki)
+                              gamma, w, has_weights, all_observed, log_pkfki)
     return log_pkfki
 
 
