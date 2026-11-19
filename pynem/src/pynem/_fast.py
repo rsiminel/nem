@@ -53,11 +53,12 @@ def seq_sweep(CM, log_pkfki, indptr, indices, data, beta, harden):
         # spatial context: sum_{j in N(i)} w_ij * CM[j]
         for k in range(K):
             ctx[k] = 0.0
-        for p in range(indptr[i], indptr[i + 1]):
-            j = indices[p]
-            w = data[p]
-            for k in range(K):
-                ctx[k] += w * CM[j, k]
+        if beta != 0.0:
+            for p in range(indptr[i], indptr[i + 1]):
+                j = indices[p]
+                w = data[p]
+                for k in range(K):
+                    ctx[k] += w * CM[j, k]
 
         # log numerator and its max
         maxlog = -np.inf

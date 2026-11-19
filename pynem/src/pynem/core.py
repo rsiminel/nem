@@ -573,14 +573,14 @@ class NEM:
                 )
             # Pure-Python fallback (used without numba, and for Gibbs/gem).
             for i in range(N):
-                context = ns.spatial_context(i, CM, K)
+                context = ns.spatial_context(i, CM, K) if beta else 0.0
                 c_i = self._normalize_local(log_pkfki[i] + beta * context, K)
                 CM[i] = self._harden_node(c_i, K, rng)
             return CM
 
         # Parallel (Jacobi): all nodes from the previous classification,
         # vectorised — context = A @ C, then a single log-sum-exp normalisation.
-        contexts = ns.compute_all_contexts(C)
+        contexts = ns.compute_all_contexts(C) if beta else 0.0
         new_C = self._normalize_membership(log_pkfki, beta * contexts)
 
         if self.algorithm == "ncem":
