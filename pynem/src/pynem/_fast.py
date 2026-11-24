@@ -255,3 +255,36 @@ def inertia_accum(Xf, observed, C, centers, use_abs, Iner_KD):
                     Iner_KD[k, d] += c * abs(diff)
                 else:
                     Iner_KD[k, d] += c * diff * diff
+
+
+@njit(cache=True)
+def field_sweep(Z, log_pkfki, indptr, indices, data, K, beta, u):
+    """One in-place Gibbs sweep over hard labels ``Z``, in index order.
+
+    Site i draws its label from p_k f_k(x_i) exp(beta * sum_j w_ij [Z_j = k]),
+    with the uniform ``u[i]``; the simulated field of 'sfield'.
+    """
+    N = Z.shape[0]
+    p = np.empty(K)
+    for i in range(N):
+        for k in range(K):
+            p[k] = log_pkfki[i, k]
+        for q in range(indptr[i], indptr[i + 1]):
+            p[Z[indices[q]]] += beta * data[q]
+        top = -np.inf
+        for k in range(K):
+            if p[k] > top:
+                top = p[k]
+        if not np.isfinite(top):
+            continue
+        total = 0.0
+        for k in range(K):
+            p[k] = math.exp(p[k] - top)
+            total += p[k]
+        x = u[i] * total
+        k = 0
+        while k < K - 1 and x >= p[k]:
+            x -= p[k]
+            k += 1
+        Z[i] = k
+    return Z

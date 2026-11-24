@@ -6,6 +6,17 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `heu_d` and `heu_l` follow NEM's heuristics: `heu_d` stopped at the first beta
+  and `heu_l` never stopped, and both kept the beta of highest U. Their
+  parameters are `heu_params` (NEM's `-H`); the tested betas are in `beta_trace_`.
+- `psgrad` takes NEM's gradient step (one Newton step per iteration by default,
+  `psgrad_params`, NEM's `-G`); its bounds are `beta_bounds`.
+
+### Added
+- `beta_mode="sfield"`: simulated-field estimation of beta (Celeux, Forbes &
+  Peyrard 2003).
+
 ## [0.6.1] — 2026-10-23
 
 Performance release (contributed by Teo Lemane, #9). No change to the

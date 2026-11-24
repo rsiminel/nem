@@ -367,7 +367,7 @@ ari = pynem.metrics.adjusted_rand_index(true_labels, model.labels_)
 | Distributions | `normal`, `laplace`, `bernoulli` |
 | Dispersion models | `s__` (shared), `sk_` (per-class), `s_d` (per-variable), `skd` (full) |
 | Proportions | `p_` (equal), `pk` (free) |
-| Beta estimation | `fix`, `psgrad` (pseudo-gradient), `heu_d`, `heu_l` (heuristics) |
+| Beta estimation | `fix`, `psgrad` (pseudo-gradient), `sfield` (simulated field), `heu_d`, `heu_l` (heuristics) |
 | Initialization | `sort`, `random` (multiple starts), `param` (from given parameters) |
 | Site update | `parallel` (Jacobi), `seq` (sequential Gauss-Seidel, NEM default) |
 | Missing data | `replace` (EM-style) or `ignore` |
@@ -401,7 +401,7 @@ model = pynem.NEM(
     family="normal",        # normal | laplace | bernoulli
     dispersion="s__",       # s__ | sk_ | s_d | skd
     proportion="pk",        # p_ | pk
-    beta_mode="fix",        # fix | psgrad | heu_d | heu_l
+    beta_mode="fix",        # fix | psgrad | sfield | heu_d | heu_l
     init="sort",            # sort | random | param
     site_update="parallel", # parallel (Jacobi) | seq (Gauss-Seidel)
     n_init=1,               # random restarts (for init="random")

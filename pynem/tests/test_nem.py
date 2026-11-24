@@ -159,14 +159,47 @@ class TestModelVariants:
         assert len(model.labels_) == 100
 
 
-class TestHeuristicBeta:
-    def test_heuristic_d(self):
-        G = pynem.io.read_graph(BASENAME)
-        model = NEM(n_clusters=3, beta_mode="heu_d", family="normal",
-                    init="sort", max_iter=50)
-        model.fit(G)
-        assert model.beta_ >= 0
-        assert len(model.labels_) == 100
+class TestEstimatedBeta:
+    """Beta estimates of the C NEM 1.07 (nem_exe <file> 3 -B <mode>, defaults otherwise)."""
+
+    @staticmethod
+    def fit(name, mode, beta=1.0, seed=None):
+        G = pynem.io.read_graph(str(EXAMPLES_DIR / name))
+        return NEM(n_clusters=3, beta=beta, family="normal", proportion="p_",
+                   dispersion="s__", init="sort", site_update="seq", tol=0.01,
+                   max_iter=100, beta_mode=mode, random_state=seed).fit(G)
+
+    @pytest.mark.parametrize("name,mode,beta", [
+        ("essai", "heu_d", 0.1), ("essai", "heu_l", 0.0), ("essai", "psgrad", 0.0769),
+        ("potts_30x30_3", "heu_d", 1.4), ("potts_30x30_3", "heu_l", 1.4),
+        ("potts_30x30_3", "psgrad", 0.8753), ("sbm_100_3", "heu_d", 0.3),
+        ("sbm_100_3", "psgrad", 0.6496),
+    ])
+    def test_matches_c(self, name, mode, beta):
+        assert self.fit(name, mode).beta_ == pytest.approx(beta, abs=1e-4)
+
+    def test_heu_l_runs_whole_grid_without_loss(self):
+        # the C stops at 1.9: its float32 beta counter overshoots 2.0
+        model = self.fit("sbm_100_3", "heu_l")
+        assert not model.beta_found_
+        assert model.beta_ == pytest.approx(2.0)
+        assert len(model.beta_trace_) == 21
+
+    def test_heuristic_restores_beta(self):
+        model = self.fit("essai", "heu_d", beta=0.7)
+        assert model.beta == 0.7
+
+    def test_bounds(self):
+        G = pynem.io.read_graph(str(EXAMPLES_DIR / "potts_30x30_3"))
+        model = NEM(n_clusters=3, beta=1.0, family="normal", init="sort", site_update="seq",
+                    beta_mode="psgrad", beta_bounds=(0.0, 0.5)).fit(G)
+        assert model.beta_ == 0.5
+
+    def test_sfield_seeded(self):
+        a, b = (self.fit("potts_30x30_3", "sfield", seed=1) for _ in range(2))
+        assert a.beta_ == b.beta_
+        assert np.array_equal(a.labels_, b.labels_)
+        assert 0.5 < a.beta_ < 1.0
 
 
 class TestRandomInit:

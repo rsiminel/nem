@@ -3,7 +3,7 @@
 import networkx as nx
 import numpy as np
 
-from ._fast import HAS_NUMBA, seq_sweep
+from ._fast import HAS_NUMBA, field_sweep, seq_sweep
 from .models import (
     DIV_GUARD,
     PROB_FLOOR,
@@ -35,7 +35,26 @@ class NEM:
     proportion : str
         'p_' (equal) or 'pk' (free).
     beta_mode : str
-        'fix', 'psgrad', 'heu_d', 'heu_l'.
+        'fix', 'psgrad', 'sfield', 'heu_d', 'heu_l'. 'psgrad' updates beta by
+        a gradient step on the pseudo-likelihood at every iteration, as NEM;
+        'sfield' does the same with the neighbours' labels drawn from the
+        current memberships (simulated field, Celeux, Forbes & Peyrard 2003),
+        which also replace the expected labels in the E-step; 'heu_d' and
+        'heu_l' are NEM's heuristics (see ``heu_params``).
+    heu_params : tuple
+        ``(step, max, ddrop, dloss, lloss)``, NEM's ``-H``. Beta is raised from
+        0 by ``step`` up to ``max``. 'heu_d' stops when the slope of D against
+        beta drops by more than ``ddrop`` * N, or else takes the beta before
+        D first lost ``dloss`` of its range; 'heu_l' stops when L falls
+        ``lloss`` * N below its maximum. The partition is then refitted at the
+        estimate from the last partition kept. The tested betas and their
+        criteria are in ``beta_trace_``.
+    psgrad_params : tuple
+        ``(n_iter, tol, step)``, NEM's ``-G``: gradient steps per EM
+        iteration, convergence threshold on |gradient| / N, and step
+        (0 = Newton step).
+    beta_bounds : tuple
+        ``(min, max)`` of beta for 'psgrad' and 'sfield'; NEM's are (-5, 5).
     init : str
         'sort', 'random', or 'param' (initialize from given parameters,
         like NEM's INIT_PARAM_FILE — requires ``init_params``).
@@ -82,7 +101,8 @@ class NEM:
                  family="normal", dispersion="s__", proportion="pk",
                  beta_mode="fix", init="sort", init_params=None,
                  site_update="parallel", feature_weights=None,
-                 completeness=None, n_init=1,
+                 completeness=None, heu_params=(0.1, 2.0, 0.8, 0.5, 0.02),
+                 psgrad_params=(1, 0.001, 0.0), beta_bounds=(-5.0, 5.0), n_init=1,
                  max_iter=100, tol=1e-3, convergence="classification",
                  missing="replace", random_state=None, verbose=0):
         self.n_clusters = n_clusters
@@ -97,6 +117,9 @@ class NEM:
         self.site_update = site_update
         self.feature_weights = feature_weights
         self.completeness = completeness
+        self.heu_params = heu_params
+        self.psgrad_params = psgrad_params
+        self.beta_bounds = beta_bounds
         # Validated (D,) arrays, or None for the exact standard path. Set in
         # fit(); defaulted here so direct _initialize() calls also work.
         self._weights = None
@@ -195,7 +218,7 @@ class NEM:
         ns = NeighborhoodSystem(G)
 
         if self.beta_mode in ("heu_d", "heu_l"):
-            self._fit_heuristic(X, G, ns, K, rng)
+            self._fit_heuristic(X, ns, K, rng)
             return self
 
         n_runs = self.n_init if self.init == "random" else 1
@@ -238,7 +261,7 @@ class NEM:
     _PARAM_NAMES = (
         "n_clusters", "beta", "algorithm", "family", "dispersion", "proportion",
         "beta_mode", "init", "init_params", "site_update", "feature_weights",
-        "completeness", "n_init", "max_iter", "tol", "convergence", "missing",
+        "completeness", "heu_params", "psgrad_params", "beta_bounds", "n_init", "max_iter", "tol", "convergence", "missing",
         "random_state", "verbose",
     )
 
@@ -344,8 +367,8 @@ class NEM:
         )
         return float(logsumexp(log_pkfki, axis=1).sum())
 
-    def _run_once(self, X, ns, K, rng):
-        """Single NEM run from one initialization."""
+    def _run_once(self, X, ns, K, rng, C0=None):
+        """Single NEM run from one initialization, or from memberships ``C0``."""
         N, D = X.shape
         beta = self.beta
 
@@ -358,7 +381,10 @@ class NEM:
         Xf = np.where(observed, X, 0.0)
 
         # Initialize
-        C = self._initialize(X, ns, K, rng, observed=observed, Xf=Xf)
+        C = self._initialize(X, ns, K, rng, observed=observed, Xf=Xf) if C0 is None else C0.copy()
+        if self.beta_mode == "sfield":
+            Z = np.argmax(C, axis=1).astype(np.int64)
+            indptr, indices, data = ns.csr_arrays()
 
         # Compute sample statistics for random init
         history = []
@@ -382,7 +408,7 @@ class NEM:
 
             # Beta estimation (pseudo-gradient)
             if self.beta_mode == "psgrad":
-                beta = self._estimate_beta(C, ns, beta)
+                beta = self._estimate_beta(C, ns.compute_all_contexts(C), beta)
 
             # log(p_k f_k(x_i)) depends only on the current parameters, so it is
             # identical in the E-step and in the criteria below — compute it once.
@@ -395,8 +421,16 @@ class NEM:
 
             # E-step
             old_C = C.copy()
-            C = self._e_step(X, C, params, ns, beta, K, rng,
-                             log_pkfki=log_pkfki, observed=observed, Xf=Xf)
+            if self.beta_mode == "sfield":
+                # one Gibbs sweep draws the field; C, then beta, see it as the neighbours
+                Z = field_sweep(Z, np.ascontiguousarray(log_pkfki, dtype=np.float64),
+                                indptr, indices, data, K, float(beta), rng.random(N))
+                field = ns.compute_all_contexts(np.eye(K)[Z])
+                C = self._normalize_membership(log_pkfki, beta * field)
+                beta = self._estimate_beta(C, field, beta)
+            else:
+                C = self._e_step(X, C, params, ns, beta, K, rng,
+                                 log_pkfki=log_pkfki, observed=observed, Xf=Xf)
 
             # Compute criteria
             criteria = self._compute_criteria(X, C, params, ns, beta,
@@ -608,43 +642,29 @@ class NEM:
             C[finite] = num / total
         return C
 
-    def _estimate_beta(self, C, ns, beta, max_beta_iter=50, step=0.0):
-        """Pseudo-gradient ascent on pseudo-likelihood for beta."""
-        N, K = C.shape
-        contexts = ns.compute_all_contexts(C)
+    def _estimate_beta(self, C, contexts, beta):
+        """Gradient ascent on the pseudo-likelihood of beta, as NEM's EstimBeta.
 
-        for _ in range(max_beta_iter):
-            # Gradient and second derivative of pseudo-likelihood
-            # Q(beta) = sum_i [beta * sum_k c_ik * con_ik - log(sum_k exp(beta*con_ik))]
-            beta_con = beta * contexts  # (N, K)
-            max_bc = np.max(beta_con, axis=1, keepdims=True)
-            exp_bc = np.exp(beta_con - max_bc)
-            Z = exp_bc.sum(axis=1, keepdims=True)  # (N, 1)
-
-            # sum_k c_ik * con_ik
-            c_dot_con = (C * contexts).sum(axis=1)  # (N,)
-
-            # sum_k con_ik * exp(beta*con_ik) / Z_i
-            mean_con = (contexts * exp_bc / Z).sum(axis=1)  # (N,)
-
+        ``contexts[i, k]`` is the weighted sum of the neighbours' labels in k.
+        """
+        N = C.shape[0]
+        n_iter, tol, step = self.psgrad_params
+        c_dot_con = (C * contexts).sum(axis=1)
+        for _ in range(int(n_iter)):
+            beta_con = beta * contexts
+            exp_bc = np.exp(beta_con - np.max(beta_con, axis=1, keepdims=True))
+            Z = exp_bc.sum(axis=1)
+            mean_con = (contexts * exp_bc).sum(axis=1) / Z
+            mean_con2 = (contexts ** 2 * exp_bc).sum(axis=1) / Z
             grad = (c_dot_con - mean_con).sum()
-
-            # Second derivative
-            mean_con2 = (contexts ** 2 * exp_bc / Z).sum(axis=1)
-            d2 = (mean_con2 - mean_con ** 2).sum()
-
-            if abs(grad) < self.tol * N:
-                break
-
-            if step <= 0 and abs(d2) > DIV_GUARD:
-                # Newton step with damping factor 4
-                beta += grad / (4 * abs(d2))
+            if step <= 0:
+                # Newton step, damped by 4 and floored at N / 10 as in NEM
+                beta += grad / max(4 * (mean_con2 - mean_con ** 2).sum(), N / 10)
             else:
-                beta += grad * (step / N) if step > 0 else 0.01
-
-            beta = np.clip(beta, -5.0, 5.0)
-
-        return beta
+                beta += grad * step / N
+            if abs(grad) < tol * N:
+                break
+        return float(np.clip(beta, *self.beta_bounds))
 
     def _compute_criteria(self, X, C, params, ns, beta, log_pkfki=None):
         """Compute all criteria: U, D, G, L, M.
@@ -705,37 +725,60 @@ class NEM:
             return abs(crit_new["U"] - crit_old["U"]) / abs(crit_new["U"]) < self.tol
         return False
 
-    def _fit_heuristic(self, X, G, ns, K, rng):
-        """Heuristic beta estimation: increase beta until criterion drops."""
-        # First run with beta=0 (pure EM)
-        self.beta = 0.0
-        result0 = self._run_once(X, ns, K, rng)
-        D0 = result0["criteria"]["D"]
-        L0 = result0["criteria"]["L"]
-
-        best_result = result0
-        best_U = result0["criteria"]["U"]
-
-        beta_step = 0.1
-        max_beta = 2.0
-
-        for trial_beta in np.arange(beta_step, max_beta + beta_step, beta_step):
-            self.beta = trial_beta
-            result = self._run_once(X, ns, K, rng)
-
-            # Check stopping criterion
-            if self.beta_mode == "heu_d":
-                if result["criteria"]["D"] < 0.8 * D0:
+    def _fit_heuristic(self, X, ns, K, rng):
+        """NEM's beta heuristics (ClassifyByNemHeuBeta): raise beta until D or L drops."""
+        N = X.shape[0]
+        step, bmax, ddrop, dloss, lloss = self.heu_params
+        heu_d = self.beta_mode == "heu_d"
+        crit = "D" if heu_d else "L"
+        user_beta, seed = self.beta, rng.integers(2**63)
+        betas, values, trace = [], [], []
+        best_C = None
+        found = d_incr = False
+        this_slope = prev_slope = l_max = None
+        try:
+            for i in range(int(bmax / step + 1e-9) + 1):
+                self.beta = i * step
+                result = self._run_once(X, ns, K, np.random.default_rng(seed))
+                c = result["criteria"]
+                trace.append({"beta": self.beta, **c, "n_iter": result["n_iter"]})
+                betas.append(self.beta)
+                values.append(c[crit])
+                n = len(values)
+                keep = False
+                if heu_d:
+                    if n >= 2:
+                        prev_slope, this_slope = this_slope, (values[-1] - values[-2]) / (betas[-1] - betas[-2])
+                        d_incr |= this_slope >= 0.5 * N
+                    if n < 3:
+                        keep = True
+                    elif not (found or d_incr):
+                        found = this_slope - prev_slope < -ddrop * N
+                        keep = not found
+                else:
+                    l_max = c["L"] if l_max is None else max(l_max, c["L"])
+                    found = n >= 2 and c["L"] < l_max - lloss * N
+                    keep = not found
+                if keep:
+                    best_C = result["membership"]
+                if found:
+                    estimate = betas[-2]
                     break
-            elif self.beta_mode == "heu_l":
-                if abs(result["criteria"]["L"]) < 0.02 * abs(L0):
-                    break
-
-            if result["criteria"]["U"] > best_U:
-                best_U = result["criteria"]["U"]
-                best_result = result
-
-        self._store_result(best_result)
+            if not found:
+                if heu_d:
+                    # no drop: the beta before D first lost dloss of its range
+                    thres = values[0] - (values[0] - min(values)) * dloss
+                    first = next(j for j, v in enumerate(values) if v <= thres)
+                    estimate, best_C = betas[max(first - 1, 0)], None
+                else:
+                    estimate = betas[-1]
+            self.beta = estimate
+            result = self._run_once(X, ns, K, np.random.default_rng(seed), C0=best_C)
+        finally:
+            self.beta = user_beta
+        self._store_result(result)
+        self.beta_trace_ = trace
+        self.beta_found_ = found
 
     def _store_result(self, result):
         """Store algorithm results as attributes."""
