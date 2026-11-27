@@ -5,7 +5,7 @@ try:
 except ImportError:
     numba = None
 
-from threadpoolctl import threadpool_limits
+from threadpoolctl import threadpool_info, threadpool_limits
 
 
 def _forksafe_layer():
@@ -15,14 +15,20 @@ def _forksafe_layer():
 
 
 def set_threads(n):
-    """Cap pynem's kernels and the BLAS under NumPy at ``n`` threads.
+    """Cap pynem's kernels at ``n`` threads, and the BLAS under NumPy at one.
+
+    pynem's parallelism comes from its numba kernels, so the BLAS runs on one
+    thread whatever ``n``. Its limit is only lowered, and only once: asking
+    OpenBLAS for more threads than it started with can segfault, and setting
+    its thread count again, e.g. in a forked worker, leaves idle threads spinning.
 
     :param n: Maximum number of threads, clamped to at least 1 and to numba's build maximum.
     :return: The numba thread count in force, or None without numba.
     """
     n = max(1, int(n))
     _forksafe_layer()
-    threadpool_limits(n)
+    if any(lib["num_threads"] > 1 for lib in threadpool_info()):
+        threadpool_limits(1)
     if numba is None:
         return None
     n = min(n, numba.config.NUMBA_NUM_THREADS)
