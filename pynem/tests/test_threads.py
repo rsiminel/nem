@@ -72,7 +72,18 @@ def _run(tmp_path, script):
                           capture_output=True, text=True, timeout=600)
 
 
+def _has_tbb():
+    """Whether numba can load its TBB threading layer."""
+    try:
+        from numba.np.ufunc import tbbpool  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
 @pytest.mark.skipif(not HAS_NUMBA, reason="numba not installed")
+@pytest.mark.skipif(HAS_NUMBA and not _has_tbb(),
+                    reason="without TBB, numba's fork-safe layer is workqueue, not thread-safe")
 def test_concurrent_fits_in_threads(tmp_path):
     """Fits run from several Python threads at once must not abort the process."""
     done = _run(tmp_path, CONCURRENT_SCRIPT)

@@ -39,7 +39,7 @@ jobs:
       - name: Install pynem (with test deps)
         run: pip install -e ".[dev]"
       - name: Install Numba (best-effort; pure-Python fallback otherwise)
-        run: pip install "numba>=0.57" || echo "numba unavailable for this Python; testing the pure-Python fallback"
+        run: pip install -e ".[fast]" || echo "numba unavailable for this Python; testing the pure-Python fallback"
       - name: Run test suite
         run: python -m pytest -q
         # PPanGGOLiN tests self-skip when the submodule/package is absent.
